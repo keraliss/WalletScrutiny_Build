@@ -15,8 +15,11 @@ RUN apt-get update && apt-get upgrade -y && \
     libgtk-3-0 libgtk-3-dev v4l2loopback-dkms v4l2loopback-utils libzbar-dev libzbar0 \
     libzbargtk-dev libjsoncpp-dev libsecret-1-dev libsecret-1-0 ffmpeg xvfb xdotool x11-utils \
     libstdc++-12-dev llvm-14 libsdl2-dev libclang1-14 libtool sudo libusb-1.0-0-dev \
-    python3-virtualenv xorg xdg-user-dirs xterm tesseract-ocr ca-certificates && \
+    python3-virtualenv xorg xdg-user-dirs xterm tesseract-ocr ca-certificates openssl && \
     apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Update SSL certificates
+RUN update-ca-certificates
 
 # Install Android SDK Command-line Tools
 RUN update-java-alternatives --set /usr/lib/jvm/java-1.8.0-openjdk-amd64 && \
@@ -38,6 +41,15 @@ RUN git clone https://github.com/flutter/flutter.git /root/flutter && \
     flutter precache && \
     flutter doctor
 
+# Configure Cargo to use git-fetch-with-cli and add crates.io mirror
+RUN mkdir -p /root/.cargo && \
+    echo '[net]' > /root/.cargo/config.toml && \
+    echo 'git-fetch-with-cli = true' >> /root/.cargo/config.toml && \
+    echo '[source.crates-io]' >> /root/.cargo/config.toml && \
+    echo 'replace-with = "tuna"' >> /root/.cargo/config.toml && \
+    echo '[source.tuna]' >> /root/.cargo/config.toml && \
+    echo 'registry = "https://mirrors.tuna.tsinghua.edu.cn/git/crates.io-index.git"' >> /root/.cargo/config.toml
+
 # Install Rust
 RUN curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain 1.69.0 -y && \
     rustup target add aarch64-linux-android
@@ -50,9 +62,25 @@ WORKDIR /root/repo
 COPY build_ffi_android.sh /root/repo/
 RUN chmod +x /root/repo/build_ffi_android.sh
 
-# Create a new script to run the build and keep the contafiner running
+# Create a new script to run the build and keep the container running
 RUN echo '#!/bin/bash' > /root/build_and_keep_running.sh && \
-    echo 'cd /root/repo && ./build_ffi_android.sh' >> /root/build_and_keep_running.sh && \
+    echo 'cd /root/repo' >> /root/build_and_keep_running.sh && \
+    echo 'pkill -f cargo' >> /root/build_and_keep_running.sh && \
+    echo 'rm -f /root/.cargo/.package-cache' >> /root/build_and_keep_running.sh && \
+    echo './build_ffi_android.sh || {' >> /root/build_and_keep_running.sh && \
+    echo '    echo "Build failed, attempting to clean and rebuild..."' >> /root/build_and_keep_running.sh && \
+    echo '    cargo clean' >> /root/build_and_keep_running.sh && \
+    echo '    cargo build --target=aarch64-linux-android' >> /root/build_and_keep_running.sh && \
+    echo '    cargo build --target=aarch64-linux-android --release' >> /root/build_and_keep_running.sh && \
+    echo '    flutter pub get' >> /root/build_and_keep_running.sh && \
+    echo '    flutter build apk --release' >> /root/build_and_keep_running.sh && \
+    echo '}' >> /root/build_and_keep_running.sh && \
+    echo 'echo "Build process completed. Checking for APK..."' >> /root/build_and_keep_running.sh && \
+    echo 'find /root/repo -name "*.apk"' >> /root/build_and_keep_running.sh && \
+    echo 'echo "Versions of tools:"' >> /root/build_and_keep_running.sh && \
+    echo 'cargo --version' >> /root/build_and_keep_running.sh && \
+    echo 'rustc --version' >> /root/build_and_keep_running.sh && \
+    echo 'flutter --version' >> /root/build_and_keep_running.sh && \
     echo 'tail -f /dev/null' >> /root/build_and_keep_running.sh && \
     chmod +x /root/build_and_keep_running.sh
 
